@@ -407,24 +407,26 @@ class GRPOTrainer:
         self.update_reference_model(initial_load=True)
 
     
-    def update_reference_model(self, initial_load=False):
+    def update_reference_model(self, initial_load: bool = False):
+        """Update reference model"""
         print(f"Updating reference model at step {self.global_step}")
-
-        if self.ref_model is None:
-            print("Loading reference base model once...")
-            self.ref_model = AutoModelForCausalLM.from_pretrained(
+        
+        # Load the base model (un-pefted) if it's the initial load
+        if self.ref_model is None or initial_load:
+            print("Initial loading of Reference Model (QLoRA base)...")
+            ref_base_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 quantization_config=self.bnb_config,
-                device_map="auto"
+                device_map="auto" # Use "auto" to place it efficiently
             )
-            self.ref_model.eval()
-            for p in self.ref_model.parameters():
-                p.requires_grad = False
+            self.ref_model = ref_base_model
 
-        # salva solo adapter LoRA
+        # Save current policy model's adapter weights to a temporary path
         tmp_path = os.path.join(self.output_dir, "tmp_ref_update")
+        os.makedirs(tmp_path, exist_ok=True)
         self.policy_model.save_pretrained(tmp_path)
 
+        # Load the policy's adapter weights into the reference model
         if not isinstance(self.ref_model, PeftModel):
             self.ref_model = PeftModel.from_pretrained(
                 self.ref_model,
@@ -432,12 +434,33 @@ class GRPOTrainer:
                 is_trainable=False
             )
         else:
-            self.ref_model.load_adapter(tmp_path, adapter_name="ref")
-            self.ref_model.set_adapter("ref")
-
+            # If ref_model is already a PeftModel, load the new adapter config
+            # Remove previous adapter if it exists to avoid memory issues
+            if "current_ref" in self.ref_model.peft_config:
+                 self.ref_model.delete_adapter("current_ref")
+            
+            self.ref_model.load_adapter(tmp_path, adapter_name="current_ref")
+            self.ref_model.set_adapter("current_ref")
+        
         self.ref_model.eval()
-        shutil.rmtree(tmp_path)
+        for param in self.ref_model.parameters():
+            param.requires_grad = False
+        
+        try:
+            del ref_base_model
+        except Exception:
+            pass
+        
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
+        try:
+            shutil.rmtree(tmp_path)
+        except Exception:
+            pass
+        print("✓ Reference model updated and frozen.")
     
     def train(self):
         """Main training loop with early stopping"""
@@ -865,9 +888,7 @@ class GRPOTrainer:
         # ========================================================================
         # GRPO LOSS: Policy gradient + KL penalty
         # ========================================================================
-        log_ratio = policy_log_probs_full - ref_log_probs_full
-        loss = -(advantages * log_ratio).mean() + self.kl_beta * log_ratio.mean()
-
+        loss = -(advantages * policy_log_probs_full).mean() + self.kl_beta * kl_div.mean()
         
         return loss
 
@@ -894,8 +915,7 @@ class GRPOTrainer:
         ).squeeze(2)
         
         # Create a mask for completion tokens only
-        encoded = self.tokenizer(prompts, add_special_tokens=False)
-        prompt_lengths = [len(x) for x in encoded["input_ids"]]
+        prompt_lengths = [len(self.tokenizer.encode(p)) for p in prompts]
         completion_mask = attention_mask[:, 1:].clone()
         
         for i, prompt_len in enumerate(prompt_lengths):
@@ -1015,7 +1035,7 @@ class GRPOTrainer:
 
 
 def main():
-    MODEL_NAME = "./models/GRPO_Hybrid_4B"
+    MODEL_NAME = "./models/GRPO_def_4B"
     TRAIN_DATA = "./data/BFCL/dataset/train.json"
     TEST_DATA = "./data/BFCL/dataset/test.json"
     OUTPUT_DIR = "./outputs/BFCL_Qwen3-4B"

@@ -62,7 +62,8 @@ python GRPO_test.py
 ```
 
 ## BFCL Train
-Here we have 2 different train approaches GRPO_BFCL_v1.py and GRPO_BFCL_v2.py. In the table below we compared them:
+Here we have 2 different train approaches GRPO_Hybrid_BFCL.py and GRPO_noHybrid_BFCL.py. The two model undergoes through the same training but the difference is that the first one start from the GRPO-Hybrid.py model and the second one from the GRPO-1k-def.py model
+In the table below we compared them:
 
 <div align="center">
   <img src="resources/BFCL.png" alt="BFCL" width="300" height="300"/>
@@ -75,7 +76,7 @@ python BFCL_dataset_creation.py
 ```
 - BFCL train
 ```bash
-python GRPO_BFCL_v1.py
+python GRPO_Hybrid_BFCL.py
 ```
 
 - BFCL evaluation
